@@ -3,8 +3,41 @@
   "utility.rkt" "manual-traverse.rkt"
   txexpr pollen/decode pollen/core pollen/tag)
 (provide macro environment group define-math-tag ->ltx $ $$ ensure-math)
-(provide split-bullets)
+(provide split-bullets store-args)
 ;(provide (all-defined-out))
+
+(define (whitespace? val)
+  (and (string? val) (regexp-match #px"^\\s*$" val)))
+(define (newline? val)
+  (and (whitespace? val) (string-contains? val "\n")))
+(define (math-flatten xexpr)
+  (cond [(is-tag? xexpr 'math)
+         (decode xexpr
+                 #:txexpr-proc (decode-flattener #:only '(ensure-math)))]
+        ; We know that this is not contained within a math tag, for if
+        ; it were, the above branch would have been taken already, and
+        ; decode would've been applied to this tag.
+        [(is-tag? xexpr 'ensure-math)
+         (math-flatten (txexpr 'math null (get-elements xexpr)))]
+        [(txexpr? xexpr)
+         (map math-flatten xexpr)]
+        [else xexpr]))
+
+(define (group . _)
+  (list-splice `("{" ,@_ "}")))
+(define math (default-tag-function 'math))
+(define ensure-math (default-tag-function 'ensure-math))
+(define-tag-function ($ _ text)
+  (apply math text))
+(define-tag-function ($$ _ text)
+  (apply math #:display "" text))
+
+(define-syntax-rule (define-math-tag (name attrs elems) body ...)
+  (define-tag-function 
+    (name attrs elems) 
+    (let [(result ((lambda (attrs elems) body ...) attrs elems))]
+      (ensure-math result))))
+
 
 ; - Core tags
 ;   - macro : For latex macros.
@@ -42,59 +75,46 @@
                #:splice? #t
                #:before-first '("{")
                #:after-last '("}")))
+(define (store-args args)
+  (map (λ (a) (txexpr 'arg null a)) args))
+
+; (or/c string? symbol?) (listof core?) ...
+; This tag represents a latex macro. The first argument is the name of
+; the macro.
+; The remaining arguments are the arguments to the macro, where each
+; argument is a list of (or/c string? core-tag?).
 (define (macro name . args)
   (txexpr 'macro 
-          null
-          `( ,(txexpr 'name null (list name))
-             ,(txexpr 'start null '("{"))
-             ,(txexpr 'end null '("}"))
-             ,(txexpr 'args null args))))
+          `((start "{") (end "}") (name ,(~a name)))
+          (store-args args)))
+
+; (or/c string? symbol?) (listof core?)
+;   #:before-args (listof core?)
+;   #:args (listof (listof core?))
+;   #:opt-args (listof core?)
+;   #:after-args (listof core?)
+; The first argument is the name of the environment. The second
+; argument is the list of body matter. 
+; The general format of the output is:
+;       \begin{name} before-args [ opt-args ] args after-args
+;       body
+;       \end{name}
+; args functions like the arguments to a macro.
+; opt-args does not. You may only have one optional argument in a
+; latex macro/environment.
 (define (environment name body
                      #:args [args null] 
                      #:opt-args [optional null]
                      #:before-args [before null]
                      #:after-args [after null])
   (txexpr 'environment 
-          null
-          `( ,(txexpr 'name null (list name))
-             ,(txexpr 'args null args)
+          `((name ,(~a name)))
+          `( ,(txexpr 'args null (store-args args))
              ,(txexpr 'opt-args null optional)
              ,(txexpr 'before-args null before)
              ,(txexpr 'after-args null after)
              ,(txexpr 'body null body))))
 
-(define (group . _)
-  (list-splice `("{" ,@_ "}")))
-(define math (default-tag-function 'math))
-(define ensure-math (default-tag-function 'ensure-math))
-(define-tag-function ($ _ text)
-  (apply math text))
-(define-tag-function ($$ _ text)
-  (apply math #:display "" text))
-
-(define (math-flatten xexpr)
-  (cond [(is-tag? xexpr 'math)
-         (decode xexpr
-                 #:txexpr-proc (decode-flattener #:only '(ensure-math)))]
-        ; We know that this is not contained within a math tag, for if
-        ; it were, the above branch would have been taken already, and
-        ; decode would've been applied to this tag.
-        [(is-tag? xexpr 'ensure-math)
-         (math-flatten (txexpr 'math null (get-elements xexpr)))]
-        [(txexpr? xexpr)
-         (map math-flatten xexpr)]
-        [else xexpr]))
-
-(define-syntax-rule (define-math-tag (name attrs elems) body ...)
-  (define-tag-function 
-    (name attrs elems) 
-    (let [(result ((lambda (attrs elems) body ...) attrs elems))]
-      (ensure-math result))))
-
-(define (whitespace? val)
-  (and (string? val) (regexp-match #px"^\\s*$" val)))
-(define (newline? val)
-  (and (whitespace? val) (string-contains? val "\n")))
 
 ; splits a list of txexpr-elements? where there are newline? elements,
 ; or there are tags of a predefined type (typically 'i). The tags
@@ -171,9 +191,6 @@
   (let* ([items (split-newline elems 'i)]
         [cleaned (remove-empty-items items)])
     (txexpr 'list '((type "math")) items)))
-
-(define (apply-tags txpr . name-func-pairs)
-  (apply-tag-funcs name-func-pairs txpr))
 
 ; txexpr? string? -> txexpr?
 ; Takes in a txexpr whose elements are 'i tags and newline? The 'i
@@ -257,8 +274,8 @@
             (lambda (tx) 
               (apply eql (get-elements tx))))))
   (define (remove-bullet item-tag bullet-pattern)
-    (let* ([1st (report (first (get-elements item-tag)))]
-           [no-bullet (report (regexp-replace bullet-pattern 1st ""))])
+    (let* ([1st (first (get-elements item-tag))]
+           [no-bullet (regexp-replace bullet-pattern 1st "")])
       (txexpr (get-tag item-tag)
               (get-attrs item-tag)
               (cons no-bullet (rest (get-elements item-tag))))))
@@ -279,7 +296,7 @@
              (cons 'i 
                    (λ (tx)
                       (insert-elements 
-                        (report (remove-bullet (report tx) #px"^\\s*-\\s*"))
+                        (remove-bullet tx #px"^\\s*-\\s*")
                         (macro 'item) " "))))
            tx))))
   (define (list-tags->core txpr)
@@ -301,15 +318,15 @@
                          [("math")
                           (add-between items "\\\\\n")])]
                      [flattened-items
-                       (report (decode-elements 
-                          spaced-out-items
-                          #:txexpr-proc (decode-flattener #:only '(i))))])
+                       (decode-elements 
+                         spaced-out-items
+                         #:txexpr-proc (decode-flattener #:only '(i)))])
                 (environment environment-name flattened-items))))))
   (list-tags->core
     (user-lists->list-tags txpr)))
 
 (define (core->ltx elements)
-  ; Just redoing select* so that
+  ; Just redoing select* so that I always get back a list of stuff.
   (define (diff-select* tag-name element)
     (let ([result (select* tag-name element)])
       (if result
@@ -323,7 +340,8 @@
   ; name : symbol?
   ; start : string?
   ; end : string?
-  ; args : (listof (or/c string? macro?)
+  ; args : (listof arg)
+  ; arg : (listof (or/c string? macro?))
   ; The base case for recursive application of macro->string (as if it
   ; were defined 
   ; (define (macro->string macro-tag)
@@ -353,14 +371,13 @@
   ; This proof works assuming that the only tags present in the
   ; document are core tags (the tags handled by to-each-element).
   (define (macro->string macro-tag)
-    (let* ([name (format "\\~a" (select 'name macro-tag))]
-           [args (diff-select* 'args macro-tag)]
+    (let* ([name (format "\\~a" (attr-ref macro-tag 'name))]
+           [args 
+             (map (λ (e) (string-join (get-elements e) "")) 
+                  (report (get-elements macro-tag)))]
            [formatted-args (if (null? args)
                              '("{}")
                              (macro-args args))])
-      ;(list-splice
-        ;name
-        ;(list-splice formatted-args))))
       (string-append
         name
         (string-join formatted-args ""))))
@@ -372,14 +389,16 @@
         (cons
           'environment
           (λ (tx)
-             (let ([name (~a (select 'name tx))]
+             (let ([name (attr-ref tx 'name)]
                    [opt-args (diff-select* 'opt-args tx)]
                    [before-args (diff-select* 'before-args tx)]
                    [after-args (diff-select* 'after-args tx)]
-                   [args (diff-select* 'args tx)]
+                   [args 
+                     (map (λ (e) (string-join e "")) 
+                          (diff-select* 'args tx))]
                    [body (diff-select* 'body tx)])
                (string-append
-                 (report (macro->string (macro 'begin name)))
+                 (report (macro->string (macro 'begin (list name))))
                  (string-join before-args)
                  (if (null? opt-args)
                    ""
@@ -387,7 +406,8 @@
                  (string-join (macro-args args))
                  "\n"
                  (string-join body)
-                 (macro->string (macro 'end name))))))
+                 "\n"
+                 (macro->string (macro 'end (list name)))))))
         (cons 
           'math
           (λ (tx) (string-join `("$" ,@(get-elements tx) "$") ""))))))
