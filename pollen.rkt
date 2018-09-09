@@ -1,9 +1,10 @@
 #lang racket
 (require txexpr 
-         "latex-commands.rkt"
+         "latex-base.rkt"
          "manual-traverse.rkt"
          "utility.rkt"
          pollen/tag
          pollen/decode)
 
-(provide (all-defined-out))
+(provide (all-defined-out)
+         (all-from-out "latex-base.rkt"))

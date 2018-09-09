@@ -1,6 +1,8 @@
 \documentclass{article}
-◊(local-require "latex-base.rkt")
+\usepackage{amsmath}
+\usepackage{amssymb}
+◊(local-require txexpr)
 
 \begin{document}
-◊(->ltx doc)
+◊(get-elements (->ltx doc))
 \end{document}

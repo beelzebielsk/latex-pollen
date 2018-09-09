@@ -3,6 +3,7 @@
   "utility.rkt" "manual-traverse.rkt"
   txexpr pollen/decode pollen/core pollen/tag)
 (provide macro environment group define-math-tag ->ltx $ $$)
+(provide split-bullets)
 ;(provide (all-defined-out))
 
 ; - Core tags
@@ -115,37 +116,42 @@
        (txexpr list-tag null current))))
 
 (define (split-bullets lst bullet-pattern list-tag)
+  ; Keep looking through whitespace until you see a bullet. If you
+  ; don't find this bullet, then return nothing. Otherwise, return the
+  ; series of whitespace and the bullet item itself.
+  (define (scan-until-next-bullet items bullet?)
+    (let ([item (first items)])
+      (cond [(whitespace? item)
+             (let ([up-to-bullet (scan-until-next-bullet (rest items) bullet?)])
+               (if up-to-bullet 
+                 (cons item up-to-bullet) 
+                 up-to-bullet))]
+            [(bullet? item) (list item)]
+            [else #f])))
+  (define (bullet? elem) 
+    (and (string? elem) 
+         (regexp-match bullet-pattern elem)))
   (split-where
     lst
-    (λ (elem current-split . _)
+    (λ (elem current-split remaining)
        (or (is-tag? elem list-tag)
-           (and (string? elem) 
-                (regexp-match bullet-pattern elem)
-                (not (null? current-split))
-                ; TODO: If I allow the user to control how values are
-                ; inserted into the current split, or allow them to
-                ; consume more than 1 token from remaining, then I can
-                ; let this function scrub out unnecessary newlines. 
-                ; NOTE: Remember that, before you place the split in
-                ; splits, the split is in reverse order. That's a
-                ; nasty implementation detail and ought to be changed.
-                ; You're losing clarity for the sake of some speed. Is
-                ; that worth it?
-                ; For the moment, I couldn't guarantee that the
-                ; newline would be the last-encountered whitespace
-                ; before a bullet. Perhaps I'll fix this some other
-                ; time.
-                (findf newline? (takef current-split whitespace?)))))
+           (and (newline? elem) 
+                (scan-until-next-bullet remaining bullet?))))
     #:keep-where 
     (λ (current . _) 
-       (if (string? current)
-         'next
+       (if (newline? current)
+         'ignore
          'separate))
     #:split-map
     (λ (current . _)
-       (if (txexpr? current)
+       (if (txexpr? current) ; Was already an item.
          current
-         (txexpr list-tag null current)))))
+         (let-values ([(up-to-bullet rst)
+                       (splitf-at current (λ (v) (or (whitespace? v)
+                                                     (bullet? v))))])
+           (txexpr list-tag null 
+                   (cons (string-join up-to-bullet "")
+                         rst)))))))
 
 (define (remove-empty-items items)
   (decode-elements items
