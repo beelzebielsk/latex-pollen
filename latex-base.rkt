@@ -258,7 +258,7 @@
               (level-lists (apply ol (get-elements tx)) "ordered")))
       (cons 'eql
             (lambda (tx) 
-              (level-lists (apply eql (get-elements tx)) "math")))))
+              (apply eql (get-elements tx))))))
   (define (remove-bullet item-tag bullet-pattern)
     (let* ([1st (report (first (get-elements item-tag)))]
            [no-bullet (report (regexp-replace bullet-pattern 1st ""))])
