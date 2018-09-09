@@ -2,6 +2,8 @@
 (require 
   "utility.rkt" "manual-traverse.rkt"
   txexpr pollen/decode pollen/core pollen/tag)
+(provide macro environment group define-math-tag ->ltx $ $$)
+;(provide (all-defined-out))
 
 ; - Core tags
 ;   - macro : For latex macros.
@@ -62,14 +64,12 @@
 
 (define (group . _)
   (list-splice `("{" ,@_ "}")))
-;(define-tag-function 
-  ;(math attrs elems)
-  ;(txexpr 'math attrs elems))
+(define math (default-tag-function 'math))
 (define ensure-math (default-tag-function 'ensure-math))
-;(define-tag-function ($ _ text)
-  ;(apply math text))
-;(define-tag-function ($$ _ text)
-  ;(apply math #:display "" text))
+(define-tag-function ($ _ text)
+  (apply math text))
+(define-tag-function ($$ _ text)
+  (apply math #:display "" text))
 
 (define (math-flatten xexpr)
   (cond [(is-tag? xexpr 'math)
@@ -312,15 +312,55 @@
       (if result
         result
         null)))
+  ; THis is a misnomer. This transforms part of the macro to strings,
+  ; but it does not transform the arguments to strings.
+  ; However, if you apply this tag recursively to a macro:
+  ; macros contain the following tags, which contain the following
+  ; things:
+  ; name : symbol?
+  ; start : string?
+  ; end : string?
+  ; args : (listof (or/c string? macro?)
+  ; The base case for recursive application of macro->string (as if it
+  ; were defined 
+  ; (define (macro->string macro-tag)
+  ;     ...
+  ;     (let ([new-args 
+  ;            (for/list ([i args]) (macro->string i))]) ...)
+  ; The base case for this function is a macro whose args are all
+  ; strings. In this case, macro->string does return a string.
+  ; Suppose that for all macros with macro depth n or less,
+  ; macro->string returns a string. Suppose also that we are calling
+  ; macro->string on a macro of macro depth n + 1.
+  ; Well, the return value of macro-> string is
+  ; - it's formatted name, which is a string.
+  ; - A list, which starts and ends with "{" and "}" respectively, and
+  ;   in between is all the arguments of the macro with the string
+  ;   "}{" in between them. 
+  ; - The macro arguments have already been placed through
+  ;   macro->string, and they must have macro depth of n or less, 
+  ;   (strings have macro depth 0, a macro has macro depth 1 plus the
+  ;   depth of the deepest argument).
+  ; Applying this proof to what occurs below is straightforward, I
+  ; think. Instead of "macro depth" it's "tag depth", where the only
+  ; tags are the core tags. Strings have core tag depth 0, core tags
+  ; have a depth of 1 plus the depth of the deepest core tag that they
+  ; contain.
+  ; From here on out the proof ought to be pretty much the same.
+  ; This proof works assuming that the only tags present in the
+  ; document are core tags (the tags handled by to-each-element).
   (define (macro->string macro-tag)
     (let* ([name (format "\\~a" (select 'name macro-tag))]
            [args (diff-select* 'args macro-tag)]
            [formatted-args (if (null? args)
                              '("{}")
                              (macro-args args))])
-      (list-splice
+      ;(list-splice
+        ;name
+        ;(list-splice formatted-args))))
+      (string-append
         name
-        (list-splice formatted-args))))
+        (string-join formatted-args ""))))
   (define (to-each-element tx)
     (@-flatten
       (apply-tags
@@ -335,16 +375,15 @@
                    [after-args (diff-select* 'after-args tx)]
                    [args (diff-select* 'args tx)]
                    [body (diff-select* 'body tx)])
-               (list-splice
+               (string-append
                  (report (macro->string (macro 'begin name)))
-                 (list-splice before-args)
+                 (string-join before-args)
                  (if (null? opt-args)
                    ""
-                   (list-splice `( "["
-                                   ,@opt-args
-                                   "]")))
-                 (list-splice (macro-args args))
-                 (list-splice body)
+                   (string-join `("[" ,@opt-args "]")))
+                 (string-join (macro-args args))
+                 "\n"
+                 (string-join body)
                  (macro->string (macro 'end name)))))))))
   (if (txexpr? elements)
     (to-each-element elements)
@@ -352,4 +391,30 @@
 (define (->ltx elements)
   (core->ltx (convenience->core elements)))
 
-(provide (all-defined-out))
+
+; I think I understand what he means by avoiding recursive descent.
+; The decode function could've gone more like:
+; (cond [(tag? x) (tag-proc x)]
+;       [(attrs? x) (attrs-proc x)]
+;       [(txexpr? x) (txexpr-proc x)]
+;       ...
+; However, if we did things this way, then what would a value like
+; '((p "thing")) be? Is it a list of attributes, or a list of
+; txexpr?
+; We have that knowledge if we work with the whole tag at the same
+; time, so he breaks apart a txexpr, transforms the pieces, then puts
+; them back together appropriately. He does recursive descent on the
+; child elements, which is the correct thing to do.
+
+; So, assuming that decode works correctly (I believe it), by the time
+; any txexpr will get processed, it's children have already been
+; processed. All the children get decoded before the current element
+; gets decoded. So, for my manual traversal, all the children of an
+; element have been traversed before the current element has been
+; traversed.
+
+; TODO:
+; - the macro and environment functions have to be available for the
+;   pollen file. 
+; - Math behavior.
+; - tables.
