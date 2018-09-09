@@ -52,7 +52,12 @@
     (apply-tag-funcs tag-list 
                      (txexpr (gensym "temp-tag") null elements))))
 
-; TODO: Transform this into a with-tags syntax form which will take a
-; list of tag defns, apply them to a txexpr and return the result.
+; These two functions are pretty close to my "with-syntax" form.
+
+(define (apply-tags expr . tag-list)
+  (apply-tag-funcs tag-list expr))
+
+(define (apply-tags-to-elements elements . tag-list)
+  (apply-tag-funcs-to-elements tag-list elements))
 
 (provide (all-defined-out))
