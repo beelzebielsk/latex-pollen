@@ -21,7 +21,7 @@
                         (module-path-index-resolve 
                           (syntax-source-module #'EXPR))))))
           "")
-        (format "(line ~a, col ~a): Expression ~a results in ~a"
+        (format "(line ~a, col ~a): Expression ~a results in ~v"
                 (syntax-line #'EXPR)
                 (syntax-column #'EXPR)
                 (if (> (string-length expr-string) expr-length)
@@ -52,6 +52,9 @@
       [(_ ((id val) ...) body ...)
        #'(let ((id val) ...) 
            (list-splice body ...))])))
+
+; TODO: Under construction macro, which will take a list of tag names
+; and create tag functions that output the empty string.
 
 ; }}} ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -202,7 +205,7 @@
                                   ;splits)]
                 ;[else (cons (reverse current-split) splits)])
 
-((define (split-where lst split-pred? 
+(define (split-where lst split-pred? 
           #:keep-where [keep-pred? (λ _ #f)]
           #:split-map [split-func #f]
           #:action [loop-body #f])
@@ -238,21 +241,19 @@
                    [else final-current-split-contents]))
                (new-splits
                  (begin 
-                   (report decision)
                    (if (eq? decision 'separate)
-                     (report (list elem processed-current-split))
+                     (list elem processed-current-split)
                      (void))
-                   (report 
-                     (case decision
-                       [(separate #t)
-                        (if (null? processed-current-split)
-                          (cons elem splits)
-                          (append (list elem processed-current-split)
-                                  splits))]
-                       [else
-                         (if (null? processed-current-split)
-                           splits
-                           (cons processed-current-split splits))]))))]
+                   (case decision
+                     [(separate #t)
+                      (if (null? processed-current-split)
+                        (cons elem splits)
+                        (append (list elem processed-current-split)
+                                splits))]
+                     [else
+                       (if (null? processed-current-split)
+                         splits
+                         (cons processed-current-split splits))])))]
               (iter new-current-split
                     new-splits
                     tail))
@@ -261,17 +262,11 @@
                   tail)))]))
   (reverse (iter null null lst)))
 
-(define (math-flatten xexpr)
-  (cond [(is-tag? (report xexpr) 'math)
-         (decode xexpr
-                 #:txexpr-proc (decode-flattener #:only '(ensure-math)))]
-        ; We know that this is not contained within a math tag, for if
-        ; it were, the above branch would have been taken already, and
-        ; decode would've been applied to this tag.
-        [(is-tag? xexpr 'ensure-math)
-         (math-process (txexpr 'math null (get-elements xexpr)))]
-        [(txexpr? xexpr)
-         (map-elements math-flatten xexpr)]
-        [else xexpr]))
+(define (reverse* val [leaf? (λ (v) (not (list? v)))])
+  (define (helper val)
+    (if (leaf? val)
+      val
+      (reverse (map helper val))))
+  (helper val))
 
 (provide (all-defined-out))

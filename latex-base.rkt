@@ -1,5 +1,7 @@
 #lang racket
-(require txexpr "utility.rkt")
+(require 
+  "utility.rkt" "manual-traverse.rkt"
+  txexpr pollen/decode pollen/core pollen/tag)
 
 ; - Core tags
 ;   - macro : For latex macros.
@@ -8,15 +10,24 @@
 ;   - symbol : Represents stuff that's actually one output character.
 ;     macros that translate to a single output character. Will also
 ;     have other connotations of being things meant for math mode.
+;   - list : Moving this here because there's a lot of necessary
+;     transformations in going from a 'l 'ol or 'eql to a 'list. It's
+;     best to keep the transformation as part of ->ltx.
 ; - Convenience tags
 ;   - ol (ordered list)
 ;       - Initially, it will have a mixture of 'i tags and lines that
 ;         start with some bullet.
-;       - After processing, it's children will all be 'i tags.
+;       - After processing, it's children will all be 'i tags and
+;         newline?.
 ;   - l (unordered list)
 ;       - Same as for ol.
 ;   - eql (equation list)
-;       - Same as for ol.
+;       - Similar to ol, but after processing, children will all be 'i
+;         tags.
+;   - list
+;       - This is a general list tag. It's only children are 'list and
+;         'i. This is the final form of the 'l, 'ol, and 'eql tags,
+;         before they're transformed into strings.
 ;   - table
 ;       - The only children that table can have are rows.
 ;       - Rows can have plain text or 'cell tags as children. 
@@ -29,30 +40,52 @@
                #:before-first '("{")
                #:after-last '("}")))
 (define (macro name . args)
-  (txexpr 'macro #:start "{" #:end "}" args))
-(define (environment name
+  (txexpr 'macro 
+          null
+          `( ,(txexpr 'name null (list name))
+             ,(txexpr 'start null '("{"))
+             ,(txexpr 'end null '("}"))
+             ,(txexpr 'args null args))))
+(define (environment name body
                      #:args [args null] 
                      #:opt-args [optional null]
                      #:before-args [before null]
                      #:after-args [after null])
-  (txexpr 'environment #:name (~a name)
-          #:args args
-          #:opt-args optional
-          #:before-args before
-          #:after-args after))
+  (txexpr 'environment 
+          null
+          `( ,(txexpr 'name null (list name))
+             ,(txexpr 'args null args)
+             ,(txexpr 'opt-args null optional)
+             ,(txexpr 'before-args null before)
+             ,(txexpr 'after-args null after)
+             ,(txexpr 'body null body))))
 
 (define (group . _)
   (list-splice `("{" ,@_ "}")))
-(define-tag-function 
-  (math attrs elems)
-  (txexpr 'math attrs elems))
-(define-tag-function
-  (ensure-math attrs elems)
-  (txexpr 'ensure-math attrs elems))
-(define-tag-function ($ _ text)
-  (apply math text))
-(define-tag-function ($$ _ text)
-  (apply math #:display "" text))
+;(define-tag-function 
+  ;(math attrs elems)
+  ;(txexpr 'math attrs elems))
+(define ensure-math (default-tag-function 'ensure-math))
+;(define-tag-function ($ _ text)
+  ;(apply math text))
+;(define-tag-function ($$ _ text)
+  ;(apply math #:display "" text))
+
+(define (math-flatten xexpr)
+  (cond [(is-tag? xexpr 'math)
+         (decode xexpr
+                 #:txexpr-proc (decode-flattener #:only '(ensure-math)))]
+        ; We know that this is not contained within a math tag, for if
+        ; it were, the above branch would have been taken already, and
+        ; decode would've been applied to this tag.
+        [(is-tag? xexpr 'ensure-math)
+         (math-flatten (txexpr 'math null (get-elements xexpr)))]
+        [(txexpr? xexpr)
+         (map-elements math-flatten xexpr)]
+        [else xexpr]))
+(define (@-flatten txpr) 
+  (decode txpr
+          #:txexpr-proc (decode-flattener #:only '(@))))
 
 (define-syntax-rule (define-math-tag (name attrs elems) body ...)
   (define-tag-function 
@@ -60,9 +93,14 @@
     (let [(result ((lambda (attrs elems) body ...) attrs elems))]
       (ensure-math result))))
 
+(define (whitespace? val)
+  (and (string? val) (regexp-match #px"^\\s*$" val)))
 (define (newline? val)
-  (and (string? val) (regexp-match val #px"^\\s*\n\\s*$")))
+  (and (whitespace? val) (string-contains? val "\n")))
 
+; splits a list of txexpr-elements? where there are newline? elements,
+; or there are tags of a predefined type (typically 'i). The tags
+; where splits happened are kept, the newlines are thrown away.
 (define (split-newline lst list-tag)
   (split-where 
     lst 
@@ -93,8 +131,11 @@
                 ; nasty implementation detail and ought to be changed.
                 ; You're losing clarity for the sake of some speed. Is
                 ; that worth it?
-                (and (string? (first current-split))
-                     (string=? "\n" (first current-split))))))
+                ; For the moment, I couldn't guarantee that the
+                ; newline would be the last-encountered whitespace
+                ; before a bullet. Perhaps I'll fix this some other
+                ; time.
+                (findf newline? (takef current-split whitespace?)))))
     #:keep-where 
     (λ (current . _) 
        (if (string? current)
@@ -106,6 +147,209 @@
          current
          (txexpr list-tag null current)))))
 
-; txexpr? -> txexpr?
-(define (convenience->core txpr)
+(define (remove-empty-items items)
+  (decode-elements items
+                   #:txexpr-proc 
+                   (λ (tx) (if (and (is-tag? tx 'i)
+                                    ((listof newline?) (get-elements tx)))
+                               null
+                               tx))))
+(define (l . elems)
+  (let* ([items (split-bullets elems #px"^\\s*-" 'i)]
+        [cleaned (remove-empty-items items)])
+    (txexpr 'list '((type "unordered")) cleaned)))
 
+(define (ol . elems)
+  (let* ([items (split-bullets elems #px"^\\s*-" 'i)]
+        [cleaned (remove-empty-items items)])
+    (txexpr 'list '((type "ordered")) cleaned)))
+
+(define (eql . elems)
+  (let* ([items (split-newline elems 'i)]
+        [cleaned (remove-empty-items items)])
+    (txexpr 'list '((type "math")) items)))
+
+(define (apply-tags txpr . name-func-pairs)
+  (apply-tag-funcs name-func-pairs txpr))
+
+; txexpr? string? -> txexpr?
+; Takes in a txexpr whose elements are 'i tags and newline? The 'i
+; tags must still have their bullets as their first element. Returns a
+; 'list tag whose children are 'i tags and 'list tags. 
+; - Consecutive series of bullets at the same indentation level will
+;   be turned into 'list tags containing those items.
+; - If an 'i tag appears whose indentation level is greater than the
+;   level of the current 'i tag, then a new 'list tag will be started.
+; - If an 'i tag appears whose indentation level is less than the
+;   level of the current 'i tag, then the current 'list tag is ended.
+(define (level-lists list-txexpr list-type)
+  (define (get-list-level item)
+    (let* ([bullet (first (get-elements item))]
+           [indent (first (regexp-match #px"^\\s*" bullet))])
+      (quotient (string-length indent) 4)))
+  ; so-far will contain a list of items and lists.
+  ; list? list? -> (cons list? list?)
+  ; This function takes in a list of things processed so far (to be
+  ; explained in a bit), and a list of remaining stuff to process, and
+  ; adds on the result of processing the remaining stuff onto the
+  ; stuff processed so far.
+  ; so-far is a list of items and lists.
+  (define (descender so-far remaining-tokens)
+    (cond [(null? so-far)
+           (descender (list (first remaining-tokens)) 
+                      (rest remaining-tokens))]
+          [(null? remaining-tokens) 
+           (cons so-far null)]
+          [(not (is-tag? (first remaining-tokens) 'i))
+           (descender (cons (first remaining-tokens) so-far)
+                      (rest remaining-tokens))]
+          [else
+            (let* 
+              ([elem (first remaining-tokens)]
+               [rst (rest remaining-tokens)]
+               [previous-item (findf (λ (v) (is-tag? v 'i)) so-far)]
+               [current-level (if previous-item
+                                (get-list-level previous-item)
+                                0)]
+               [elem-level (get-list-level elem)])
+              (cond [(< current-level elem-level)
+                     (match (descender null remaining-tokens)
+                       [(cons sublist leftover)
+                        (descender (cons sublist so-far) leftover)])]
+                    [(> current-level elem-level) 
+                     (cons so-far remaining-tokens)]
+                    [else (descender (cons elem so-far) rst)]))]))
+  (define (item-list? val) (and (list? val) (not (txexpr? val))))
+  (define (item-list->list-tag val)
+    (if (item-list? val)
+      (txexpr 'list `((type ,list-type)) (map item-list->list-tag val))
+      val))
+  (let* ([final-so-far (first (descender null (get-elements list-txexpr)))]
+         [correct-order 
+           (reverse* 
+             final-so-far
+             (λ (v) (or (not (list? v)) (txexpr? v))))])
+    (item-list->list-tag correct-order)))
+
+;(define-tag-function 
+  ;(row attrs elems) 
+  ;(txexpr 'row null (split-list-at-tag-or-newline elems)))
+
+
+; txexpr? -> txexpr?
+; This takes one of the convenience layer tags and transforms it into
+; core-level tags. All user-defined tags should already be strings by
+; this point in time.
+(define (convenience->core txpr)
+  (define (user-lists->list-tags txpr)
+    (apply-tags 
+      txpr
+      (cons 'l
+            (lambda (tx) 
+              (level-lists (apply l (get-elements tx)) "unordered")))
+      (cons 'ol 
+            (lambda (tx) 
+              (level-lists (apply ol (get-elements tx)) "ordered")))
+      (cons 'eql
+            (lambda (tx) 
+              (level-lists (apply eql (get-elements tx)) "math")))))
+  (define (remove-bullet item-tag bullet-pattern)
+    (let* ([1st (report (first (get-elements item-tag)))]
+           [no-bullet (report (regexp-replace bullet-pattern 1st ""))])
+      (txexpr (get-tag item-tag)
+              (get-attrs item-tag)
+              (cons no-bullet (rest (get-elements item-tag))))))
+  (define (insert-elements txpr . elements)
+    (txexpr (get-tag txpr)
+            (get-attrs txpr)
+            (append elements (get-elements txpr))))
+  (define (transform-items txpr)
+    (decode
+      txpr
+      #:txexpr-proc
+      (λ (tx)
+         (if (and (is-tag? tx 'list)
+                  (member (attr-ref tx 'type)
+                          '("unordered" "ordered")))
+           (apply-tags-to-children 
+             tx
+             (cons 'i 
+                   (λ (tx)
+                      (insert-elements 
+                        (report (remove-bullet (report tx) #px"^\\s*-\\s*"))
+                        (macro 'item) " "))))
+           tx))))
+  (define (list-tags->core txpr)
+    (apply-tags
+      txpr
+      (cons 'list
+            (lambda (tx)
+              (let* ([type (attr-ref tx 'type)]
+                     [environment-name
+                       (case type
+                         [("unordered") 'itemize]
+                         [("ordered") 'enumerate]
+                         [("math") 'align*])]
+                     [items (get-elements (transform-items tx))]
+                     [spaced-out-items
+                       (case type 
+                         [("unordered" "ordered")
+                          (add-between items "\n")]
+                         [("math")
+                          (add-between items "\\\\\n")])]
+                     [flattened-items
+                       (report (decode-elements 
+                          spaced-out-items
+                          #:txexpr-proc (decode-flattener #:only '(i))))])
+                (environment environment-name flattened-items))))))
+  (list-tags->core
+    (user-lists->list-tags txpr)))
+
+(define (core->ltx elements)
+  ; Just redoing select* so that
+  (define (diff-select* tag-name element)
+    (let ([result (select* tag-name element)])
+      (if result
+        result
+        null)))
+  (define (macro->string macro-tag)
+    (let* ([name (format "\\~a" (select 'name macro-tag))]
+           [args (diff-select* 'args macro-tag)]
+           [formatted-args (if (null? args)
+                             '("{}")
+                             (macro-args args))])
+      (list-splice
+        name
+        (list-splice formatted-args))))
+  (define (to-each-element tx)
+    (@-flatten
+      (apply-tags
+        tx
+        (cons 'macro macro->string)
+        (cons
+          'environment
+          (λ (tx)
+             (let ([name (~a (select 'name tx))]
+                   [opt-args (diff-select* 'opt-args tx)]
+                   [before-args (diff-select* 'before-args tx)]
+                   [after-args (diff-select* 'after-args tx)]
+                   [args (diff-select* 'args tx)]
+                   [body (diff-select* 'body tx)])
+               (list-splice
+                 (report (macro->string (macro 'begin name)))
+                 (list-splice before-args)
+                 (if (null? opt-args)
+                   ""
+                   (list-splice `( "["
+                                   ,@opt-args
+                                   "]")))
+                 (list-splice (macro-args args))
+                 (list-splice body)
+                 (macro->string (macro 'end name)))))))))
+  (if (txexpr? elements)
+    (to-each-element elements)
+    (append-map to-each-element elements)))
+(define (->ltx elements)
+  (core->ltx (convenience->core elements)))
+
+(provide (all-defined-out))
