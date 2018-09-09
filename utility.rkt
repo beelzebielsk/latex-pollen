@@ -53,6 +53,10 @@
        #'(let ((id val) ...) 
            (list-splice body ...))])))
 
+(define (@-flatten txpr) 
+  (decode txpr
+          #:txexpr-proc (decode-flattener #:only '(@))))
+
 ; TODO: Under construction macro, which will take a list of tag names
 ; and create tag functions that output the empty string.
 

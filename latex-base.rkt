@@ -2,7 +2,7 @@
 (require 
   "utility.rkt" "manual-traverse.rkt"
   txexpr pollen/decode pollen/core pollen/tag)
-(provide macro environment group define-math-tag ->ltx $ $$)
+(provide macro environment group define-math-tag ->ltx $ $$ ensure-math)
 (provide split-bullets)
 ;(provide (all-defined-out))
 
@@ -82,11 +82,8 @@
         [(is-tag? xexpr 'ensure-math)
          (math-flatten (txexpr 'math null (get-elements xexpr)))]
         [(txexpr? xexpr)
-         (map-elements math-flatten xexpr)]
+         (map math-flatten xexpr)]
         [else xexpr]))
-(define (@-flatten txpr) 
-  (decode txpr
-          #:txexpr-proc (decode-flattener #:only '(@))))
 
 (define-syntax-rule (define-math-tag (name attrs elems) body ...)
   (define-tag-function 
@@ -370,7 +367,7 @@
   (define (to-each-element tx)
     (@-flatten
       (apply-tags
-        tx
+        (math-flatten tx)
         (cons 'macro macro->string)
         (cons
           'environment
@@ -390,7 +387,10 @@
                  (string-join (macro-args args))
                  "\n"
                  (string-join body)
-                 (macro->string (macro 'end name)))))))))
+                 (macro->string (macro 'end name))))))
+        (cons 
+          'math
+          (λ (tx) (string-join `("$" ,@(get-elements tx) "$") ""))))))
   (if (txexpr? elements)
     (to-each-element elements)
     (append-map to-each-element elements)))
