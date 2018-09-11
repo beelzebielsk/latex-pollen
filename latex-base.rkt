@@ -405,7 +405,7 @@
                    (string-join `("[" ,@opt-args "]")))
                  (string-join (macro-args args))
                  "\n"
-                 (string-join body)
+                 (string-join body "")
                  "\n"
                  (macro->string (macro 'end (list name)))))))
         (cons 
